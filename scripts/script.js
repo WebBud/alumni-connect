@@ -1,107 +1,75 @@
-/**
- * @name handleFail
- * @param err - error thrown by any function
- * @description Helper function to handle errors
- */
-let handleFail = function(err){
-    console.log("Error : ", err);
-};
-
-// Queries the container in which the remote feeds belong
+// JS reference to the container where the remote feeds belong
 let remoteContainer= document.getElementById("remote-container");
-let canvasContainer =document.getElementById("canvas-container");
+
 /**
- * @name addVideoStream
- * @param streamId
- * @description Helper function to add the video stream to "remote-container"
+ * @name addVideoContainer
+ * @param uid - uid of the user
+ * @description Helper function to add the video stream to "remote-container".
  */
-function addVideoStream(streamId){
+function addVideoContainer(uid){
     let streamDiv=document.createElement("div"); // Create a new div for every stream
-    streamDiv.id=streamId;                       // Assigning id to div
+    streamDiv.id=uid;                       // Assigning id to div
     streamDiv.style.transform="rotateY(180deg)"; // Takes care of lateral inversion (mirror image)
     remoteContainer.appendChild(streamDiv);      // Add new div to container
 }
 /**
- * @name removeVideoStream
- * @param evt - Remove event
- * @description Helper function to remove the video stream from "remote-container"
+ * @name removeVideoContainer
+ * @param uid - uid of the user
+ * @description Helper function to remove the video stream from "remote-container".
  */
-function removeVideoStream (evt) {
-    let stream = evt.stream;
-    stream.stop();
-    let remDiv=document.getElementById(stream.getId());
-    remDiv.parentNode.removeChild(remDiv);
-    console.log("Remote stream is removed " + stream.getId());
-}
-
-function addCanvas(streamId){
-    let canvas=document.createElement("canvas");
-    canvas.id='canvas'+streamId;
-    canvasContainer.appendChild(canvas);
-    let ctx = canvas.getContext('2d');
-    let video=document.getElementById(`video${streamId}`);
-
-    video.addEventListener('loadedmetadata', function() {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-    });
-
-    video.addEventListener('play', function() {
-        var $this = this; //cache
-        (function loop() {
-            if (!$this.paused && !$this.ended) {
-                ctx.drawImage($this, 0, 0);
-                setTimeout(loop, 1000 / 30); // drawing at 30fps
-            }
-        })();
-    }, 0);
+function removeVideoContainer (uid) {
+    let remDiv=document.getElementById(uid);
+    remDiv && remDiv.parentNode.removeChild(remDiv);
 }
 
 // Client Setup
 // Defines a client for RTC
-let client = AgoraRTC.createClient({
-    mode: 'live',
-    codec: "h264"
-});
+const client = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" });
 
-// Client Setup
-// Defines a client for Real Time Communication
-client.init("<---app id--->",() => console.log("AgoraRTC client initialized") ,handleFail);
+const [localAudioTrack, localVideoTrack] = await AgoraRTC.createMicrophoneAndCameraTracks();
 
-// The client joins the channel
-client.join(null,"any-channel",null, (uid)=>{
+// Initialize the stop button
+initStop(client, localAudioTrack, localVideoTrack);
 
-    // Stream object associated with your web cam is initialized
-    let localStream = AgoraRTC.createStream({
-        streamID: uid,
-        audio: false,
-        video: true,
-        screen: false
+// Play the local track
+localVideoTrack.play('me');
+
+function initStop(client, localAudioTrack, localVideoTrack){
+  const stopBtn = document.getElementById('stop');
+  stopBtn.disabled = false; // Enable the stop button
+  stopBtn.onclick = null; // Remove any previous event listener
+  stopBtn.onclick = function () {
+    client.unpublish(); // stops sending audio & video to agora
+    localVideoTrack.stop(); // stops video track and removes the player from DOM
+    localVideoTrack.close(); // Releases the resource
+    localAudioTrack.stop();  // stops audio track
+    localAudioTrack.close(); // Releases the resource
+    client.remoteUsers.forEach(user => {
+        if (user.hasVideo) {
+            removeVideoContainer(user.uid) // Clean up DOM
+        }
+        client.unsubscribe(user); // unsubscribe from the user
     });
-
-    // Associates the stream to the client
-    localStream.init(function() {
-
-        //Plays the localVideo
-        localStream.play('me');
-
-        //Publishes the stream to the channel
-        client.publish(localStream, handleFail);
-
-    },handleFail);
-
-},handleFail);
-//When a stream is added to a channel
-client.on('stream-added', function (evt) {
-    client.subscribe(evt.stream, handleFail);
+    client.removeAllListeners(); // Clean up the client object to avoid memory leaks
+    stopBtn.disabled = true;
+  }
+}
+// Set up event listeners for remote users publishing or unpublishing tracks
+client.on("user-published", async (user, mediaType) => {
+  await client.subscribe(user, mediaType); // subscribe when a user publishes
+  if (mediaType === "video") {
+    addVideoContainer(String(user.uid)) // uses helper method to add a container for the videoTrack
+    user.videoTrack.play(String(user.uid));
+  }
+  if (mediaType === "audio") {
+    user.audioTrack.play(); // audio does not need a DOM element
+  }
 });
-//When you subscribe to a stream
-client.on('stream-subscribed', function (evt) {
-    let stream = evt.stream;
-    addVideoStream(stream.getId());
-    stream.play(stream.getId());
-    addCanvas(stream.getId());
+client.on("user-unpublished",  async (user, mediaType) => {
+  if (mediaType === "video") {
+      removeVideoContainer(user.uid) // removes the injected container
+  }
 });
-//When a person is removed from the stream
-client.on('stream-removed',removeVideoStream);
-client.on('peer-leave',removeVideoStream);
+
+const _uid = await client.join(appId, channelId, token, null); 
+await client.publish([localAudioTrack, localVideoTrack]);
